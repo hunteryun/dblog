@@ -1,0 +1,81 @@
+<?php
+
+use Hunter\Core\Utility\Unicode;
+
+/**
+ * Implements hook_entity_info().
+ */
+function dblog_entity_info() {
+  return array(
+    'name' => 'dblog',
+    'primaryKey' => 'did',
+    'baseTable'  => 'dblog',
+  );
+}
+
+/**
+ * add a dblog record.
+ */
+function dblog($type, $level, $message, array $context = []) {
+  global $app, $base_url;
+  $request = $app->getContainer()->get('Zend\Diactoros\ServerRequest');
+  $serverParams = $request->getServerParams();
+  $currentUser = session()->get('curuser');
+
+  $context += [
+    'channel' => $type,
+    'link' => '',
+    'user' => !empty($currentUser) ? $currentUser : NULL,
+    'uid' => isset($currentUser->uid) ? $currentUser->uid : 0,
+    'request_uri' => $base_url.request_uri(),
+    'referer' => !empty($request->getHeader('Referer')) ? $request->getHeader('Referer') : '',
+    'ip' => $serverParams['REMOTE_ADDR'],
+    'timestamp' => time(),
+  ];
+
+  $message_placeholders = parseMessagePlaceholders($message, $context);
+
+  entity_create('dblog', [
+    'uid' => $context['uid'],
+    'type' => Unicode::substr($context['channel'], 0, 64),
+    'message' => $message,
+    'variables' => serialize($message_placeholders),
+    'severity' => $level,
+    'link' => $context['link'],
+    'location' => $context['request_uri'],
+    'referer' => $context['referer'],
+    'hostname' => Unicode::substr($context['ip'], 0, 128),
+    'timestamp' => $context['timestamp'],
+  ]);
+}
+
+/**
+ * {@inheritdoc}
+ */
+function parseMessagePlaceholders(&$message, array &$context) {
+  $variables = [];
+  $has_psr3 = FALSE;
+  if (($start = strpos($message, '{')) !== FALSE && strpos($message, '}') > $start) {
+    $has_psr3 = TRUE;
+    // Transform PSR3 style messages containing placeholders to
+    // \Drupal\Component\Utility\SafeMarkup::format() style.
+    $message = preg_replace('/\{(.*)\}/U', '@$1', $message);
+  }
+  foreach ($context as $key => $variable) {
+    // PSR3 style placeholders.
+    if ($has_psr3) {
+      // Keys are not prefixed with anything according to PSR3 specs.
+      // If the message is "User {username} created" the variable key will be
+      // just "username".
+      if (strpos($message, '@' . $key) !== FALSE) {
+        $key = '@' . $key;
+      }
+    }
+    if (!empty($key) && ($key[0] === '@' || $key[0] === '%' || $key[0] === '!')) {
+      // The key is now in \Drupal\Component\Utility\SafeMarkup::format() style.
+      $variables[$key] = $variable;
+    }
+  }
+
+  return $variables;
+}
